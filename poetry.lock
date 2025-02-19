@@ -553,6 +553,7 @@ ssh = ["bcrypt (>=3.1.5)"]
 test = ["certifi (>=2024)", "cryptography-vectors (==44.0.1)", "pretend (>=0.7)", "pytest (>=7.4.0)", "pytest-benchmark (>=4.0)", "pytest-cov (>=2.10.1)", "pytest-xdist (>=3.5.0)"]
 test-randomorder = ["pytest-randomly"]
 
+
 [[package]]
 name = "decorator"
 version = "5.1.1"
@@ -679,6 +680,7 @@ files = [
     {file = "editdistance-0.8.1-pp39-pypy39_pp73-win_amd64.whl", hash = "sha256:0c96a8e981f385f0b7392d047c5caab8e0b24f94b71120787fd78241efc34237"},
     {file = "editdistance-0.8.1.tar.gz", hash = "sha256:d1cdf80a5d5014b0c9126a69a42ce55a457b457f6986ff69ca98e4fe4d2d8fed"},
 ]
+
 
 [[package]]
 name = "exceptiongroup"
@@ -3732,4 +3734,5 @@ propcache = ">=0.2.0"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10.16"
-content-hash = "9d724dd1cc50a7a6a42f0b5d8a81ad788332939ffc6a3ba12537106567f4ebe7"
+
+content-hash = "8fb594d34e760a71c5fab55657d59fc45caade71b83a88b20ffa832b96b9aa5a"

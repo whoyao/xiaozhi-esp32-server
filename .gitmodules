@@ -1,0 +1,6 @@
+[submodule "models/jina-embeddings-v2-base-zh"]
+	path = models/jina-embeddings-v2-base-zh
+	url = https://huggingface.co/jinaai/jina-embeddings-v2-base-zh
+[submodule "models/SenseVoiceSmall"]
+	path = models/SenseVoiceSmall
+	url = https://huggingface.co/FunAudioLLM/SenseVoiceSmall
