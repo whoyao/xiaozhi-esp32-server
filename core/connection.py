@@ -84,7 +84,8 @@ class ConnectionHandler:
         self.auth_code_gen = AuthCodeGenerator.get_instance()
         self.is_device_verified = False  # 添加设备验证状态标志
 
-
+        # 记录时间
+        self.start_time = time.time()
         self.llm_memory = MemoryManager(
             llm=_llm, 
             embd=_embd,
@@ -94,6 +95,7 @@ class ConnectionHandler:
             summary_length=config.get("memory", {}).get("summary_length", 1000),
             memory_dir=config.get("memory", {}).get("memory_dir", "memory_data"),
         )
+        self.logger.bind(tag=TAG).info("MemoryManager 初始化完成, 耗时: %.2f 秒" % (time.time() - self.start_time))
 
 
     async def handle_connection(self, ws):

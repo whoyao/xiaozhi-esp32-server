@@ -1,7 +1,7 @@
 import hashlib
 import threading
 import json
-import os
+import os, time
 from collections import deque
 import uuid
 
@@ -12,7 +12,6 @@ import numpy as np
 from datetime import datetime
 from config.logger import setup_logging
 TAG = __name__
-logger = setup_logging()
 # Cosine similarity function
 cos_sim = lambda a, b: (a @ b.T) / (norm(a) * norm(b))
 
@@ -23,6 +22,7 @@ class IntentRecognizer:
     intent_embeddings_cache = {}
     cache_lock = threading.Lock()
     def __init__(self, embedding_model):
+        self.logger = setup_logging()
         self.embedding_model = embedding_model
         # 存储注册的意图和相似度阈值以及对应的回调函数
         self.intent_callbacks = []
@@ -34,24 +34,25 @@ class IntentRecognizer:
         :param callback_function: 对应的回调函数
         :param similarity_threshold: 意图与查询的相似度阈值，默认为0.7
         """
+        embed_start = time.time()
         with self.cache_lock:
             for phrase in intent_phrases:
-                # 如果该短语的嵌入已经缓存，则直接使用缓存
                 if phrase not in IntentRecognizer.intent_embeddings_cache:
                     # 计算嵌入并缓存
                     intent_embedding = self.embedding_model.encode([phrase])[0]
                     IntentRecognizer.intent_embeddings_cache[phrase] = intent_embedding
                 else:
-                    # 使用缓存的嵌入
                     intent_embedding = IntentRecognizer.intent_embeddings_cache[phrase]
 
-                # 存储每个意图短语及其对应的回调函数和相似度阈值
                 self.intent_callbacks.append({
                     "phrase": phrase,
                     "embedding": intent_embedding,
                     "callback": callback_function,
                     "threshold": similarity_threshold
                 })
+        embed_time = time.time() - embed_start
+        if embed_time > 0.1:  # 只记录超过0.1秒的嵌入计算
+            self.logger.bind(tag=TAG).info(f"意图短语嵌入计算耗时: {embed_time:.2f}秒")
 
     def handle_query(self, query: str, *args, **kwargs):
         """
@@ -79,9 +80,9 @@ class IntentRecognizer:
 
         if best_match and matched_callback:
             # 调用与匹配意图对应的回调函数，传递位置参数和关键字参数
-            logger.info(f"{query}\t意图识别结果：{best_match}\tfunc:{matched_callback}\t (相似度: {highest_similarity:.2f})")
+            self.logger.bind(tag=TAG).info(f"{query}\t意图识别结果：{best_match}\tfunc:{matched_callback}\t (相似度: {highest_similarity:.2f})")
             return matched_callback(query,*args, **kwargs)
-        logger.info(f"{query}\t未识别到意图")
+        self.logger.bind(tag=TAG).info(f"{query}\t未识别到意图")
         return None
 
 
@@ -110,14 +111,32 @@ class MemoryManager:
 
             memory_dir='memory_data'
         ):
-        """
-        初始化记忆管理类
-        :param embedding_model: 用于生成文本嵌入的模型
-        :param max_memory_length: 最大记忆总字符长度
-        :param summary_length: 每次生成的总结的长度
-        :param memory_file: 保存记忆数据的文件路径
-        """
-        logger.info(f"初始化记忆管理器 max_memory_length:{max_memory_length} summary_length:{summary_length} max_summary_length:{max_summary_length}")
+        start_time = time.time()
+        self.logger = setup_logging()
+        
+        # 基础配置初始化
+        self._init_basic_config(llm, embd, summary_prompt, max_memory_length, summary_length, max_summary_length, memory_dir)
+        
+        # 加载记忆数据
+        memory_start = time.time()
+        self.load_memory()
+        memory_time = time.time() - memory_start
+        if memory_time > 0.1:  # 只记录超过0.1秒的加载时间
+            self.logger.bind(tag=TAG).info(f"记忆数据加载耗时: {memory_time:.2f}秒")
+        
+        # 初始化意图识别器
+        intent_start = time.time()
+        self._init_intent_recognizer()
+        intent_time = time.time() - intent_start
+        if intent_time > 0.1:  # 只记录超过0.1秒的初始化时间
+            self.logger.bind(tag=TAG).info(f"意图识别器初始化耗时: {intent_time:.2f}秒")
+        
+        total_time = time.time() - start_time
+        if total_time > 0.1:  # 只记录超过0.1秒的总时间
+            self.logger.bind(tag=TAG).info(f"记忆管理器初始化完成，总耗时: {total_time:.2f}秒")
+
+    def _init_basic_config(self, llm, embd, summary_prompt, max_memory_length, summary_length, max_summary_length, memory_dir):
+        """初始化基础配置"""
         self.max_memory_length = max_memory_length
         self.summary_length = summary_length
         self.max_summary_length = max_summary_length
@@ -127,8 +146,9 @@ class MemoryManager:
         self.summary_prompt = summary_prompt
         self.llm = llm
         self.embedding_model = embd  # 用于生成文本的嵌入
-
         self.memory_dir = memory_dir
+        self.executor = ThreadPoolExecutor()
+        
         if not os.path.exists(self.memory_dir):
             os.makedirs(self.memory_dir,exist_ok=True)  # 创建目录
         
@@ -136,29 +156,34 @@ class MemoryManager:
         if not os.access(self.memory_dir, os.W_OK):
             try:
                 os.chmod(self.memory_dir, 0o700)  # 设置读写权限
-                logger.info(f"已为目录 {self.memory_dir} 设置读写权限")
             except Exception as e:
-                logger.warning(f"无法修改 {self.memory_dir} 的权限: {e}")
+                self.logger.bind(tag=TAG).warning(f"目录权限设置失败: {e}")
                 raise PermissionError(f"没有足够权限访问目录: {self.memory_dir}")
-        # 加载已有记忆或初始化新的记忆
-        self.load_memory()
-        
-        # ThreadPoolExecutor for async tasks
-        self.executor = ThreadPoolExecutor()
 
-
+    def _init_intent_recognizer(self):
+        """初始化意图识别器"""
+        model_load_start = time.time()
         self.intent_recognizer = IntentRecognizer(self.embedding_model)
+        model_load_time = time.time() - model_load_start
+        if model_load_time > 0.1:
+            self.logger.bind(tag=TAG).info(f"意图识别器模型加载耗时: {model_load_time:.2f}秒")
+
+        intent_register_start = time.time()
         self.intent_recognizer.register_intent(
             ["回忆对话", "回忆上次讲的", "请回忆","有什么记忆","刚才讲了什么","上次讲了什么"], 
             self._recall_last_conversation, 
             similarity_threshold=0.7
         )
+        self.logger.bind(tag=TAG).info(f"意图短语注册完成: 回忆对话, 耗时: {time.time() - intent_register_start:.2f}秒")
         self.intent_recognizer.register_intent(
             ["删除我的记忆","删除所有记忆"], 
             self._del_all, 
             similarity_threshold=0.9
-        )       
-    
+        )
+        intent_register_time = time.time() - intent_register_start
+        if intent_register_time > 0.1:
+            self.logger.bind(tag=TAG).info(f"意图短语注册耗时: {intent_register_time:.2f}秒")
+
     def _recall_last_conversation(self,query: str, token_name: str)->str:
         """
         回忆上次的对话
@@ -204,7 +229,7 @@ class MemoryManager:
                 ]
             )
         except Exception as e:
-            logger.warning(f"LLM 处理出错 {query}: {e}")
+            self.logger.bind(tag=TAG).warning(f"LLM 处理出错 {e}")
             return None
 
         for content in llm_responses:
@@ -257,11 +282,11 @@ class MemoryManager:
         # 如果没有超过最大总结长度，直接返回
         old_summary = "".join(user_memory['memory_summary'])
         if len(user_memory) == 0 or len(old_summary) < self.max_memory_length:
-            logger.debug("不需要合并,总结长度：", len(old_summary))
+            self.logger.bind(tag=TAG).debug("不需要合并,总结长度：", len(old_summary))
             return
-        logger.debug("合并前的总结长度：", len(old_summary))
+        self.logger.bind(tag=TAG).debug("合并前的总结长度：", len(old_summary))
         summary = self._generate_summary(user_memory['memory_summary'])
-        logger.debug("合并后的总结长度：", len(summary))
+        self.logger.bind(tag=TAG).debug("合并后的总结长度：", len(summary))
         self.memory_data[token_name]['memory_summary'] = [summary]
 
         # 生成并保存摘要的嵌入
@@ -405,12 +430,27 @@ class MemoryManager:
         similar_summary = [user_memory['memory_summary'][i] for i in top_indices]
 
         return similar_summary
+
+    def _sanitize_filename(self, filename: str) -> str:
+        """
+        将文件名中的非法字符替换为下划线
+        :param filename: 原始文件名
+        :return: 安全的文件名
+        """
+        # 替换Windows系统中的非法字符 \ / : * ? " < > |
+        illegal_chars = ['\\', '/', ':', '*', '?', '"', '<', '>', '|']
+        for char in illegal_chars:
+            filename = filename.replace(char, '_')
+        return filename
+
     def save_memory(self):
         """
         将记忆保存到本地文件，每个文件以token_name作为文件名
         """
         try:
+            self.logger.bind(tag=TAG).info("开始保存记忆")
             for token_name, user_data in self.memory_data.items():
+                self.logger.bind(tag=TAG).debug(f"保存记忆数据：{token_name}:{user_data}")
                 memory_data_serializable = {
                     'memory': list(user_data['memory']),
                     'total_length': user_data['total_length'],
@@ -418,14 +458,18 @@ class MemoryManager:
                     'summary_embeddings': [embedding.tolist() for embedding in user_data['summary_embeddings']],
                     'embeddings': [embedding.tolist() for embedding in user_data['embeddings']]
                 }
-
-                file_path = os.path.join(self.memory_dir, f"{token_name}.json")
+                
+                # 使用安全的文件名
+                safe_token_name = self._sanitize_filename(token_name)
+                file_path = os.path.join(self.memory_dir, f"{safe_token_name}.json")
+                
+                self.logger.bind(tag=TAG).debug(f"保存记忆至 {file_path}")
                 with open(file_path, 'w', encoding='utf-8') as file:
                     json.dump(memory_data_serializable, file, ensure_ascii=False, indent=4)
-                logger.info(f"记忆已保存至 {file_path}")
+                self.logger.bind(tag=TAG).info(f"记忆已保存至 {file_path}")
 
         except Exception as e:
-            logger.warning(f"保存记忆时出错: {e}")
+            self.logger.bind(tag=TAG).warning(f"保存记忆时出错: {e}")
 
     def load_memory(self):
         """
@@ -443,7 +487,7 @@ class MemoryManager:
                         try:
                             memory_data = json.load(file)
                         except Exception as e:
-                            logger.warning(f"加载记忆{file_path}时出错: {e}")                         
+                            self.logger.bind(tag=TAG).warning(f"加载记忆{file_path}时出错: {e}")                         
                             continue
 
                         self.memory_data[token_name] = {
@@ -453,10 +497,10 @@ class MemoryManager:
                             'summary_embeddings': [np.array(embedding) for embedding in memory_data['summary_embeddings']],
                             'embeddings': deque([np.array(embedding) for embedding in memory_data['embeddings']])
                         }
-                    logger.info(f"记忆已从 {file_path} 加载")
+                    self.logger.bind(tag=TAG).info(f"记忆已从 {file_path} 加载")
 
         except Exception as e:
-            logger.warning(f"加载记忆时出错: {e}")
+            self.logger.bind(tag=TAG).warning(f"加载记忆时出错: {e}")
             
 
 if __name__ == '__main__':

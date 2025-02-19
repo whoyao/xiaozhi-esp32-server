@@ -1,41 +1,54 @@
 from abc import ABC, abstractmethod
-import os
+import requests
+import numpy as np
+from typing import List, Union
 from config.logger import setup_logging
+
 TAG = __name__
 logger = setup_logging()
 
-
 class EMBD(ABC):
     @abstractmethod
-    def encode(self, conn, data):        
+    def encode(self, data):        
         pass
 
 class SentenceEMBD(EMBD):
-    def __init__(self, config: dict,):
-        from sentence_transformers import SentenceTransformer,export_optimized_onnx_model
-        self.model_dir = config.get("model_dir")
-        self.device = config.get("device","cpu")
-        # model_dir = "jinaai/jina-embeddings-v2-base-zh"
-        if not os.path.exists(os.path.join(self.model_dir,"onnx","model_O3.onnx")):
-            self.model = SentenceTransformer(
-                self.model_dir,
-                backend="onnx", 
-                device=self.device,
-                model_kwargs={"file_name": "model.onnx"}
-            )
-            export_optimized_onnx_model(self.model, "O3", self.model_dir)
-            logger.bind(tag=TAG).info(f"优化模型成功: {self.model_dir}")
-
-        self.model = SentenceTransformer(
-            self.model_dir,
-            backend="onnx",
-            model_kwargs={"file_name": "onnx/model_O3.onnx"},
-            device=self.device,
-        )
-        logger.bind(tag=TAG).info(f"加载模型成功: {self.model_dir}")
+    def __init__(self, config: dict):
+        self.ollama_base_url = config.get("ollama_base_url", "http://localhost:11434")
+        self.model_name = "EntropyYue/jina-embeddings-v2-base-zh"
+        logger.bind(tag=TAG).info(f"Using Ollama embeddings with model: {self.model_name}")
         
-    def encode(self, data):
-        return self.model.encode(data)
+    def encode(self, data: Union[str, List[str]]) -> np.ndarray:
+        """获取文本的 embeddings
+
+        Args:
+            data: 单个文本字符串或文本列表
+
+        Returns:
+            numpy.ndarray: embeddings 向量或向量数组
+        """
+        if isinstance(data, str):
+            data = [data]
+            
+        try:
+            embeddings = []
+            for text in data:
+                response = requests.post(
+                    f"{self.ollama_base_url}/api/embeddings",
+                    json={
+                        "model": self.model_name,
+                        "prompt": text
+                    }
+                )
+                response.raise_for_status()
+                embedding = response.json()["embedding"]
+                embeddings.append(embedding)
+                
+            return np.array(embeddings)
+            
+        except Exception as e:
+            logger.bind(tag=TAG).error(f"Error getting embeddings from Ollama: {e}")
+            raise
 
 def create_instance(class_name: str, *args, **kwargs) -> EMBD:
     """工厂方法创建embedding实例"""
